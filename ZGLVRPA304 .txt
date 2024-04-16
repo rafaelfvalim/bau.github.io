@@ -1,0 +1,44 @@
+*&---------------------------------------------------------------------*
+*& Report  ZGLVRPA304
+*&
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+report  zglvrpa303 no standard page heading.
+
+parameter p_objnm  type progname.
+parameter p_upl    type flag radiobutton group g1.
+parameter p_downl  type flag radiobutton group g1 default 'X'.
+
+type-pools: sp01r.
+
+start-of-selection.
+
+  data lt_report type table of string.
+  data lv_path   type string.
+
+  if p_downl eq 'X'.
+
+    concatenate 'C:\TEMP\' p_objnm '.txt' into lv_path.
+
+    read report p_objnm into lt_report.
+
+    call function 'GUI_DOWNLOAD'
+      EXPORTING
+        filename = lv_path
+      TABLES
+        data_tab = lt_report.
+
+  elseif p_upl eq 'X'.
+
+    concatenate 'C:\TEMP\' p_objnm '.txt' into lv_path.
+
+    call function 'GUI_UPLOAD'
+      EXPORTING
+        filename = lv_path
+      TABLES
+        data_tab = lt_report.
+
+    insert report p_objnm from lt_report.
+
+  endif.
