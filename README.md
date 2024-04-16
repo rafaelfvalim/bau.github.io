@@ -4,8 +4,8 @@ Guarde aqui todo o loot dos projetos vividos
 
 
 
-## Como utilzar
-Adicione o codigo fonte diretamente na raiz desse repositório
+## Como utilizar
+Adicione o arquivo com o código fonte diretamente na raiz desse repositório
 ## Autores
 
 - [@rafaelfvalim](https://github.com/rafaelfvalim)
