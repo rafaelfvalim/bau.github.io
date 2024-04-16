@@ -1,0 +1,265 @@
+report  ztransporte_copia.
+
+type-pools: trwbo, ctslg.
+
+data: s_e070_main    type e070,
+      t_e070         type table of e070,
+      s_new_request  type trwbo_request_header,
+      v_as4text      type e07t-as4text,
+      v_obj_inativos type flag.
+
+
+selection-screen begin of block b1 with frame title _t01.
+select-options: s_trkorr for s_e070_main-trkorr memory id trkorr_copia.
+parameters: p_tarcli type trtarcli default '700'.
+selection-screen comment 40(60) v_tr_txt.
+selection-screen end of block b1.
+
+selection-screen begin of block b2 with frame title _t02.
+parameters: job    type flag radiobutton group imp,
+            direto type flag radiobutton group imp default 'X',
+            nenhum type flag radiobutton group imp.
+selection-screen end of block b2.
+
+
+initialization.
+  _t01 = 'Requests originais'.
+  _t02 = 'Modo de importação no destino'.
+  get parameter id 'TRKORR_COPIA' field s_trkorr-low.
+
+
+at selection-screen output.
+  "// Lê descrição da request original selecionada
+  select single as4text from e07t into v_tr_txt
+    where trkorr = s_trkorr-low and
+          langu = sy-langu.
+
+  perform check_objetos_inativos.
+  if v_obj_inativos is not initial.
+    v_tr_txt = |{ icon_message_error_small  }  { v_tr_txt }|.
+  endif.
+
+
+at selection-screen on value-request for s_trkorr-low.
+  data: lt_e071  type table of e071,
+        lt_e071k type table of e071k.
+  call function 'TRINT_ORDER_CHOICE'
+    importing
+      we_order = s_trkorr-low
+    tables
+      wt_e071  = lt_e071
+      wt_e071k = lt_e071k
+    exceptions
+      others   = 1.
+
+
+start-of-selection.
+  check s_trkorr[] is not initial.
+
+  if v_obj_inativos is not initial.
+    message 'Há objetos inativos!' type 'I' display like 'W'.
+    return.
+  endif.
+
+  "// Seleciona ordens
+  select * from e070 into table t_e070
+    where trkorr in s_trkorr or
+          strkorr in s_trkorr
+    order by trkorr.
+  check t_e070[] is not initial.
+  read table t_e070 into s_e070_main index 1.
+
+  cl_abap_debugger=>save_breakpoints(
+    main_program = 'SAPLSTR9'
+    breakpoints = value #( ( line = 171 program = 'LSTR9F01' ) )
+  ).
+
+  "// Cria nova request de cópia
+  data: lv_date(10),
+        lv_time(8).
+  write: sy-datum to lv_date,
+         sy-uzeit to lv_time.
+  concatenate s_e070_main-trkorr ': Generated test transport'
+    into v_as4text separated by space.
+  if s_e070_main-tarsystem is initial.
+    s_e070_main-tarsystem = 'CQ1'.
+  elseif s_e070_main-tarsystem cs '.'.
+    split s_e070_main-tarsystem at '.' into s_e070_main-tarsystem data(number).
+  endif.
+  call function 'TR_REQUEST_MODIFY'
+    exporting
+      iv_action           = 'CREA'
+      iv_new_request_type = 'T'
+      iv_new_task_type    = 'X'
+      iv_new_tarsystem    = s_e070_main-tarsystem
+      iv_new_as4text      = v_as4text
+    importing
+      es_new_request      = s_new_request
+    exceptions
+      others              = 1.
+  if sy-subrc <> 0.
+    message id sy-msgid type sy-msgty number sy-msgno
+            with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  endif.
+
+  "// Inclui objetos
+  call function 'TRINT_MERGE_COMMS'
+    exporting
+      it_e070                = t_e070
+    changing
+      cs_target_request      = s_new_request
+    exceptions
+      db_access_error        = 1
+      invalid_target_request = 2
+      invalid_source_request = 3
+      others                 = 4.
+  if sy-subrc <> 0.
+    message id sy-msgid type sy-msgty number sy-msgno
+            with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  endif.
+
+  update e070 set as4user = 'SMTMSSM'
+    where trkorr = s_new_request-trkorr.
+  commit work and wait.
+
+  cl_abap_debugger=>save_breakpoints(
+    main_program = 'ZCL_IM_XYXK_REQUEST_CHECK=====CP'
+    breakpoints = value #( ( line = 243 program = 'ZCL_IM_XYXK_REQUEST_CHECK=====CM002' ) )
+  ).
+  cl_abap_debugger=>save_breakpoints(
+    main_program = 'ZCL_IM_XYXK_REQUEST_CHECK=====CP'
+    breakpoints = value #( ( line = 734 program = 'ZCL_IM_XYXK_REQUEST_CHECK=====CM002' ) )
+  ).
+
+  "// Libera request
+  call function 'TR_RELEASE_REQUEST'
+    exporting
+      iv_trkorr             = s_new_request-trkorr
+      iv_display_export_log = space.
+
+  "// Aguarda até request estar exportada
+  data: ls_cofile type ctslg_cofile.
+  field-symbols: <system> like line of ls_cofile-systems.
+  do 60 times.
+    call function 'SAPGUI_PROGRESS_INDICATOR'
+      exporting
+        text = 'Aguardando exportação da request'.
+
+    clear ls_cofile.
+    call function 'TR_READ_GLOBAL_INFO_OF_REQUEST'
+      exporting
+        iv_trkorr = s_new_request-trkorr
+      importing
+        es_cofile = ls_cofile.
+    read table ls_cofile-systems assigning <system>
+      with key systemid = sy-sysid.
+    if sy-subrc = 0.
+      read table <system>-steps transporting no fields
+        with key stepid = 'E'.
+      if sy-subrc = 0.
+        exit.
+      endif.
+    endif.
+
+    wait up to 1 seconds.
+  enddo.
+
+
+  "// Importa request no ambiente destino
+  if job is not initial.
+    perform importa_via_job.
+  elseif direto is not initial.
+    call function 'TMS_MGR_IMPORT_TR_REQUEST'
+      exporting
+        iv_system                  = s_new_request-tarsystem
+        iv_request                 = s_new_request-trkorr
+        iv_client                  = p_tarcli
+        iv_offline                 = 'X'
+      exceptions
+        read_config_failed         = 1
+        table_of_requests_is_empty = 2
+        others                     = 3.
+    if sy-subrc <> 0.
+      message id sy-msgid type sy-msgty number sy-msgno
+              with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    endif.
+  endif.
+
+  "// Chama exibição do log de transporte
+  call function 'TR_LOG_OVERVIEW_REQUEST_REMOTE'
+    exporting
+      iv_trkorr = s_new_request-trkorr.
+
+
+form importa_via_job.
+  data: lt_bdcdata   type table of bdcdata,
+        lt_bdcerrors type table of bdcmsgcoll.
+
+  append value #( program = 'SAPLWBABAP' dynpro = '0100' dynbegin = 'X' ) to lt_bdcdata.
+  append value #( fnam = 'RS38M-PROGRAMM' fval = 'ZIMPORTA_REQUESTS' ) to lt_bdcdata.
+  append value #( fnam = 'BDC_OKCODE' fval = '=STRT' ) to lt_bdcdata.
+  append value #( program = 'SAPLWBABAP' dynpro = '0100' dynbegin = 'X' ) to lt_bdcdata.
+  append value #( fnam = 'BDC_OKCODE' fval = 'LEAV' ) to lt_bdcdata.
+
+  call function 'RFC_CALL_TRANSACTION_USING'
+    destination s_new_request-tarsystem
+    exporting
+      tcode                   = 'SE38'
+    tables
+      bt_data                 = lt_bdcdata
+      l_errors                = lt_bdcerrors
+    exceptions
+      authority_not_available = 1
+      others                  = 2.
+  if sy-subrc <> 0.
+    message id sy-msgid type sy-msgty number sy-msgno
+            with sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  endif.
+  loop at lt_bdcerrors assigning field-symbol(<bdcmsg>).
+    if <bdcmsg> = 'E'.
+      message id <bdcmsg>-msgid type 'I' number <bdcmsg>-msgnr
+              with <bdcmsg>-msgv1 <bdcmsg>-msgv2 <bdcmsg>-msgv3 <bdcmsg>-msgv4
+              display like 'E'.
+    else.
+      message id <bdcmsg>-msgid type <bdcmsg>-msgtyp number <bdcmsg>-msgnr
+              with <bdcmsg>-msgv1 <bdcmsg>-msgv2 <bdcmsg>-msgv3 <bdcmsg>-msgv4.
+    endif.
+  endloop.
+endform.
+
+
+form check_objetos_inativos.
+  data: lt_log type table of sprot_u.
+
+  clear v_obj_inativos.
+
+  if s_trkorr[] is initial and s_trkorr-low is not initial.
+    append value #( sign = 'I' option = 'EQ' low = s_trkorr-low ) to s_trkorr.
+  endif.
+  check s_trkorr[] is not initial.
+
+  "// Seleciona requests
+  select * from e070 into table @data(lt_e070)
+    where trkorr in @s_trkorr or
+          strkorr in @s_trkorr.
+  check lt_e070 is not initial.
+
+  "// Verifica se há objetos inativos
+  loop at lt_e070 assigning field-symbol(<e070>).
+    select * from e071 into table @data(lt_e071)
+      where trkorr = @<e070>-trkorr.
+    check lt_e071 is not initial.
+
+    clear lt_log.
+    call function 'TRINT_CHECK_INACTIVE_OBJECTS'
+      exporting
+        is_e070 = conv trwbo_s_e070( <e070> )
+        it_e071 = conv trwbo_t_e071( lt_e071 )
+      tables
+        et_log  = lt_log.
+    if lt_log is not initial.
+      v_obj_inativos = 'X'.
+      exit.
+    endif.
+  endloop.
+endform.
